@@ -72,24 +72,24 @@ async function wizard(chat,d,text,markup=baseKeys()) {
   markup = styleKeyboard(markup);
   // On the first step there is no wizard message to edit yet.
   if (!d.wizardId) {
-    const m = await bot.sendMessage(chat, text, { reply_markup: markup });
+    const m = await bot.sendMessage(chat, text, { reply_markup: markup, link_preview_options: { is_disabled: true } });
     d.wizardId = m.message_id;
     return;
   }
-  const opts = { chat_id: chat, message_id: d.wizardId, reply_markup: markup };
+  const opts = { chat_id: chat, message_id: d.wizardId, reply_markup: markup, link_preview_options: { is_disabled: true } };
   try {
     await bot.editMessageText(text, opts);
   } catch (e) {
     const message = String(e.message || "").toLowerCase();
     if (message.includes("message is not modified")) return;
     // If the wizard message was deleted or can no longer be edited, recreate it.
-    const m = await bot.sendMessage(chat, text, { reply_markup: markup });
+    const m = await bot.sendMessage(chat, text, { reply_markup: markup, link_preview_options: { is_disabled: true } });
     d.wizardId = m.message_id;
   }
 }
 async function beginWizard(chat,d,text,markup=baseKeys()) {
   markup = styleKeyboard(markup);
-  const m=await bot.sendMessage(chat,text,{reply_markup:markup}); d.wizardId=m.message_id;
+  const m=await bot.sendMessage(chat,text,{reply_markup:markup,link_preview_options:{is_disabled:true}}); d.wizardId=m.message_id;
 }
 function baseKeys(){return {inline_keyboard:[[{text:"Cancel",callback_data:"cancel"}]]};}
 function mediaKeys(){return {inline_keyboard:[[{text:"Skip attachment",callback_data:"skip_media"},{text:"Cancel",callback_data:"cancel"}]]};}
