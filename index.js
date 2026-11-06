@@ -1,5 +1,7 @@
 const TelegramBot = require("node-telegram-bot-api");
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 
 // Render Dashboard -> Service -> Environment: set these variables there.
 // Never put your real bot token in source code or commit it to GitHub.
@@ -7,7 +9,7 @@ const TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = (process.env.CHANNEL_ID || "").trim();
 let activeChannel = CHANNEL_ID; // legacy destination; private channel can be selected with /setchannel
 const ADMINS = new Set((process.env.ADMIN_IDS || "").split(",").map(v => v.trim()).filter(Boolean));
-const NO_PREVIEW = /^(1|true|yes)$/i.test(process.env.NO_PREVIEW || "false");
+const NO_PREVIEW = true; // Always suppress Telegram link previews as requested.
 
 if (!TOKEN || ADMINS.size === 0) {
   console.error("Configuration error: set BOT_TOKEN and ADMIN_IDS in Render Environment. CHANNEL_ID is optional when using /setchannel.");
@@ -29,9 +31,17 @@ server.listen(Number(process.env.PORT) || 10000, "0.0.0.0", () => {
 });
 const bot = new TelegramBot(TOKEN, { polling: true });
 const drafts = new Map();
+const POST_STORE = process.env.POST_STORE_PATH || path.join(__dirname, "published-posts.json");
+let publishedPosts = {};
+try { publishedPosts = JSON.parse(fs.readFileSync(POST_STORE, "utf8")); }
+catch (_) { publishedPosts = {}; }
+function savePublishedPosts() {
+  try { fs.writeFileSync(POST_STORE, JSON.stringify(publishedPosts, null, 2)); }
+  catch (e) { console.error("Could not save published post index:", e.message); }
+}
 const MAX_BUTTONS = 40, MAX_ROWS = 8, MAX_PER_ROW = 8;
 const allowed = id => ADMINS.has(String(id));
-const fresh = () => ({phase:"idle",type:"text",fileId:null,caption:"",entities:[],buttons:[],active:null,editIndex:null,wizardId:null,userIds:[]});
+const fresh = () => ({phase:"idle",type:"text",fileId:null,caption:"",entities:[],buttons:[],active:null,editIndex:null,wizardId:null,userIds:[],targetMessageId:null,originalType:null,originalFileId:null});
 const get = id => { if (!drafts.has(String(id))) drafts.set(String(id),fresh()); return drafts.get(String(id)); };
 const reset = id => drafts.set(String(id),fresh());
 
@@ -160,22 +170,41 @@ async function preview(chat,d){
 async function publish(chat,uid,qid){
   const d=get(uid);
   if(d.type==="text"&&!d.caption.trim())return bot.answerCallbackQuery(qid,{text:"Post text cannot be empty.",show_alert:true});
-  await bot.answerCallbackQuery(qid,{text:"Publishing..."});
+  await bot.answerCallbackQuery(qid,{text:d.targetMessageId?"Updating post...":"Publishing..."});
   const markup=d.buttons.length?{inline_keyboard:grouped(d.buttons)}:undefined;
   const entities=Array.isArray(d.entities)&&d.entities.length?d.entities:undefined;
-  let sent;
-  if(d.type==="photo")sent=await bot.sendPhoto(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
-  else if(d.type==="video")sent=await bot.sendVideo(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
-  else if(d.type==="document")sent=await bot.sendDocument(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
-  else if(d.type==="audio")sent=await bot.sendAudio(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
-  else if(d.type==="animation")sent=await bot.sendAnimation(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
-  else sent=await bot.sendMessage(activeChannel,d.caption,{entities,reply_markup:markup,disable_web_page_preview:NO_PREVIEW});
-  // After a successful publish, remove the wizard and retry deleting user inputs.
-  // The /start welcome message is intentionally kept.
+  let sent, postId=d.targetMessageId;
+  if (postId) {
+    // Telegram edits an existing message in place. Text and media messages use different edit methods.
+    if (d.type==="text" && d.originalType==="text") {
+      await bot.editMessageText(d.caption,{chat_id:activeChannel,message_id:postId,entities,reply_markup:markup,link_preview_options:{is_disabled:true}});
+    } else if (d.type!=="text" && d.originalType!=="text") {
+      if (d.fileId!==d.originalFileId || d.type!==d.originalType) {
+        const media={type:d.type,media:d.fileId,caption:d.caption||undefined,caption_entities:entities};
+        await bot.editMessageMedia(media,{chat_id:activeChannel,message_id:postId,reply_markup:markup});
+      } else {
+        await bot.editMessageCaption(d.caption||"",{chat_id:activeChannel,message_id:postId,caption_entities:entities,reply_markup:markup});
+      }
+    } else {
+      return bot.sendMessage(chat,{text:"Telegram cannot convert an existing text message into a media post (or media post into text) while keeping the same message. The original post was not changed. Create a new post for that format change.",reply_to_message_id:d.wizardId});
+    }
+    publishedPosts[String(postId)]={messageId:postId,type:d.type,fileId:d.fileId,caption:d.caption,entities:d.entities||[],buttons:d.buttons||[],updatedAt:new Date().toISOString()};
+    savePublishedPosts();
+  } else {
+    if(d.type==="photo")sent=await bot.sendPhoto(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+    else if(d.type==="video")sent=await bot.sendVideo(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+    else if(d.type==="document")sent=await bot.sendDocument(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+    else if(d.type==="audio")sent=await bot.sendAudio(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+    else if(d.type==="animation")sent=await bot.sendAnimation(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+    else sent=await bot.sendMessage(activeChannel,d.caption,{entities,reply_markup:markup,link_preview_options:{is_disabled:true}});
+    postId=sent.message_id;
+    publishedPosts[String(postId)]={messageId:postId,type:d.type,fileId:d.fileId,caption:d.caption,entities:d.entities||[],buttons:d.buttons||[],createdAt:new Date().toISOString()};
+    savePublishedPosts();
+  }
   await clearReplies(chat,d);
   const wizardId=d.wizardId;
   if(wizardId) await delMsg(chat,wizardId);
-  // One short confirmation is intentionally avoided: only the existing welcome remains.
+  await bot.sendMessage(chat,d.targetMessageId?"✅ Published post updated. Use /editposts to edit it again.":"✅ Post published. Use /editposts to edit it later.");
   reset(uid);
 }
 
@@ -207,6 +236,14 @@ bot.on("message", async m => {
   }
 });
 
+bot.onText(/^\/editposts(?:@\w+)?$/,async m=>{
+  if(m.chat.type!=="private"||!allowed(m.from.id))return;
+  const items=Object.values(publishedPosts).sort((a,b)=>String(b.createdAt||b.updatedAt||"").localeCompare(String(a.createdAt||a.updatedAt||""))).slice(0,20);
+  if(!items.length)return bot.sendMessage(m.chat.id,"এখনো এই বটের মাধ্যমে প্রকাশিত কোনো পোস্টের তালিকা নেই। নতুন পোস্ট করার পর থেকে পোস্টগুলো এখানে দেখা যাবে।");
+  const rows=items.map(p=>[{text:`✏️ ${String(p.caption||p.type||"Post").replace(/\s+/g," ").slice(0,42)} · #${p.messageId}`,callback_data:`posted_edit:${p.messageId}`}]);
+  return bot.sendMessage(m.chat.id,"যে পোস্টটি Edit করতে চাও সেটি নির্বাচন করো:",{reply_markup:{inline_keyboard:rows}});
+});
+
 bot.onText(/^\/start(?:@\w+)?$/,async m=>{
   if(m.chat.type!=="private")return;
   if(!allowed(m.from.id))return bot.sendMessage(m.chat.id,"Access denied. Ask the owner to add your numeric Telegram user ID to ADMIN_IDS.");
@@ -223,7 +260,7 @@ COMMANDS
 /newpost — start a post
 /skip — skip an empty media caption
 /cancel — cancel the current draft
-/help — show this guide
+/editposts — edit a previously published post\n/help — show this guide
 
 WORKFLOW
 1. Send /newpost.
@@ -268,12 +305,12 @@ bot.on("message",async m=>{
   console.log("Incoming post input:", { userId: uid, phase: d.phase, hasText: Boolean(text), hasPhoto: Boolean(m.photo), hasVideo: Boolean(m.video) });
   try{
     if(d.phase==="media"){
-      if(m.photo){d.type="photo";d.fileId=m.photo[m.photo.length-1].file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(m.video){d.type="video";d.fileId=m.video.file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(m.document){d.type="document";d.fileId=m.document.file_id;d.fileName=m.document.file_name||"attachment";d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(m.audio){d.type="audio";d.fileId=m.audio.file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(m.animation){d.type="animation";d.fileId=m.animation.file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(text&&text.trim()){d.type="text";d.caption=text;d.entities=Array.isArray(m.entities)?m.entities:[];await clearReplies(chat,d);return askButtonText(chat,d);}
+      if(m.photo){d.type="photo";d.fileId=m.photo[m.photo.length-1].file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.targetMessageId?preview(chat,d):(d.caption?askButtonText(chat,d):askCaption(chat,d));}
+      if(m.video){d.type="video";d.fileId=m.video.file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.targetMessageId?preview(chat,d):(d.caption?askButtonText(chat,d):askCaption(chat,d));}
+      if(m.document){d.type="document";d.fileId=m.document.file_id;d.fileName=m.document.file_name||"attachment";d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.targetMessageId?preview(chat,d):(d.caption?askButtonText(chat,d):askCaption(chat,d));}
+      if(m.audio){d.type="audio";d.fileId=m.audio.file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.targetMessageId?preview(chat,d):(d.caption?askButtonText(chat,d):askCaption(chat,d));}
+      if(m.animation){d.type="animation";d.fileId=m.animation.file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.targetMessageId?preview(chat,d):(d.caption?askButtonText(chat,d):askCaption(chat,d));}
+      if(text&&text.trim()){d.type="text";d.caption=text;d.entities=Array.isArray(m.entities)?m.entities:[];await clearReplies(chat,d);return d.targetMessageId?preview(chat,d):askButtonText(chat,d);}
       await clearReplies(chat,d);return wizard(chat,d,"STEP 1 — MEDIA OR TEXT\n\nSend a photo, video, or text-only post.");
     }
     if(d.phase==="caption"){
@@ -309,11 +346,22 @@ bot.on("callback_query",async q=>{
   if(!allowed(uid)||!chat||q.message.chat.type!=="private")return bot.answerCallbackQuery(q.id,{text:"Access denied.",show_alert:true});
   const d=get(uid);
   try{
+    if(data.startsWith("posted_edit:")){
+      const id=data.slice("posted_edit:".length), p=publishedPosts[id];
+      if(!p)return bot.answerCallbackQuery(q.id,{text:"Post record not found.",show_alert:true});
+      await bot.answerCallbackQuery(q.id);
+      reset(uid);
+      const edit=get(uid);
+      edit.targetMessageId=Number(p.messageId);edit.originalType=p.type;edit.originalFileId=p.fileId||null;
+      edit.type=p.type;edit.fileId=p.fileId||null;edit.caption=p.caption||"";edit.entities=Array.isArray(p.entities)?p.entities:[];
+      edit.buttons=Array.isArray(p.buttons)?p.buttons:[];
+      return preview(chat,edit);
+    }
     if(data==="new_post"){await bot.answerCallbackQuery(q.id);reset(uid);return askMedia(chat,get(uid));}
     if(data==="skip_media"){if(d.phase!=="media")return bot.answerCallbackQuery(q.id,{text:"This step is no longer active."});await bot.answerCallbackQuery(q.id);d.type="text";d.fileId=null;d.caption="";d.entities=[];return askCaption(chat,d);}
     if(data==="skip_caption"){if(d.phase!=="caption")return bot.answerCallbackQuery(q.id,{text:"This step is no longer active."});await bot.answerCallbackQuery(q.id);await clearReplies(chat,d);d.caption="";d.entities=[];return askButtonText(chat,d);}
     if(data==="edit_menu"){await bot.answerCallbackQuery(q.id);return wizard(chat,d,`EDIT MENU\n\nChoose what to edit or delete.\n\nButtons:\n${listButtons(d)}`,editKeys(d));}
-    if(data==="edit_media"){await bot.answerCallbackQuery(q.id);d.buttons=[];d.caption="";d.entities=[];d.fileId=null;d.type="text";return askMedia(chat,d,true);}
+    if(data==="edit_media"){await bot.answerCallbackQuery(q.id);d.caption="";d.entities=[];d.fileId=null;d.type="text";return askMedia(chat,d,true);}
     if(data==="edit_caption"){await bot.answerCallbackQuery(q.id);d.phase="edit_caption";return wizard(chat,d,`EDIT CAPTION / TEXT\n\nCurrent:\n${d.caption||"(Empty)"}\n\nSend replacement text.`);}
     if(data==="add_button"){await bot.answerCallbackQuery(q.id);return askButtonText(chat,d);}
     if(data==="preview"){await bot.answerCallbackQuery(q.id);return preview(chat,d);}
