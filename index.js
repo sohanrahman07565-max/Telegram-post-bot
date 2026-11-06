@@ -51,9 +51,9 @@ function styleKeyboard(markup) {
   markup.inline_keyboard = markup.inline_keyboard.map(row => row.map(button => {
     const action = String(button.callback_data || "").toLowerCase();
     const label = String(button.text || "").toLowerCase();
-    let style = "primary";
-    if (action.includes("cancel") || action.includes("delete") || label.includes("cancel") || label.includes("delete")) style = "danger";
-    else if (action === "publish" || label.includes("publish") || label.includes("confirm")) style = "success";
+    let style = button.style || "primary";
+    if (!button.style && (action.includes("cancel") || action.includes("delete") || label.includes("cancel") || label.includes("delete"))) style = "danger";
+    else if (!button.style && (action === "publish" || label.includes("publish") || label.includes("confirm"))) style = "success";
     return { ...button, style };
   }));
   return markup;
@@ -87,7 +87,7 @@ function captionKeys(){return {inline_keyboard:[[{text:"Skip caption",callback_d
 function validUrl(s){try{const u=new URL(s);return u.protocol==="https:"||u.protocol==="http:";}catch(_){return false;}}
 function grouped(buttons){
   const m=new Map();
-  for(const b of buttons){if(!m.has(b.row))m.set(b.row,[]);m.get(b.row).push({text:b.text,url:b.url,style:"primary"});}
+  for(const b of buttons){if(!m.has(b.row))m.set(b.row,[]);const button={text:b.text,url:b.url};if(b.style&&b.style!=="default")button.style=b.style;m.get(b.row).push(button);}
   return [...m.keys()].sort((a,b)=>a-b).map(k=>m.get(k));
 }
 function listButtons(d){return d.buttons.length?d.buttons.map((b,i)=>`${i+1}. [Row ${b.row}] ${b.text}\n   ${b.url}`).join("\n"):"(No buttons added yet)";}
@@ -116,7 +116,19 @@ async function askButtonText(chat,d){
   d.phase="button_text";d.active={text:"",url:"",row:1};
   await wizard(chat,d,`STEP 3 — BUTTON TEXT\n\nSend the text for button ${d.buttons.length+1}.`,{inline_keyboard:[[{text:"Skip buttons / Preview",callback_data:"preview",style:"primary"}],[{text:"Edit post",callback_data:"edit_menu"},{text:"Delete draft",callback_data:"delete_draft",style:"danger"}],[{text:"Cancel",callback_data:"cancel",style:"danger"}]]});
 }
-async function askUrl(chat,d){d.phase="button_url";await wizard(chat,d,`STEP 4 — BUTTON URL\n\nButton: ${d.active.text}\n\nSend an http:// or https:// URL.`,{inline_keyboard:[[{text:"Back",callback_data:"add_button",style:"primary"}],[{text:"Edit post",callback_data:"edit_menu"},{text:"Delete draft",callback_data:"delete_draft",style:"danger"}],[{text:"Cancel",callback_data:"cancel",style:"danger"}]]});}
+async function askButtonColor(chat,d,editing=false){
+  d.phase=editing?"edit_button_style":"button_color";
+  const current=editing?d.buttons[d.editIndex]?.style||"default":d.active?.style||"default";
+  const rows=[
+    [{text:`⚪ Default${current==="default"?" ✓":""}`,callback_data:"btnstyle:default"}],
+    [{text:`🔵 Blue${current==="primary"?" ✓":""}`,callback_data:"btnstyle:primary"}],
+    [{text:`🟢 Green${current==="success"?" ✓":""}`,callback_data:"btnstyle:success"}],
+    [{text:`🔴 Red${current==="danger"?" ✓":""}`,callback_data:"btnstyle:danger"}],
+    [{text:"Cancel",callback_data:"cancel",style:"danger"}]
+  ];
+  await wizard(chat,d,editing?"EDIT BUTTON COLOR\\n\\nChoose a color for this button:":"STEP 4 — BUTTON COLOR\\n\\nWhich button color do you want? Choose one:",{inline_keyboard:rows});
+}
+async function askUrl(chat,d){d.phase="button_url";await wizard(chat,d,`STEP 5 — BUTTON URL\\n\\nButton: ${d.active.text}\\nColor: ${d.active.style||"default"}\\n\\nSend an http:// or https:// URL.`,{inline_keyboard:[[{text:"Back",callback_data:"add_button",style:"primary"}],[{text:"Edit post",callback_data:"edit_menu"},{text:"Delete draft",callback_data:"delete_draft",style:"danger"}],[{text:"Cancel",callback_data:"cancel",style:"danger"}]]});}
 async function askRow(chat,d){
   d.phase="row";const previous=d.buttons.length?d.buttons[d.buttons.length-1].row:1;
   const rows=[[{text:`Use row ${previous}`,callback_data:`setrow:${previous}`}]];
@@ -269,7 +281,7 @@ bot.on("message",async m=>{
     }
     if(d.phase==="button_text"){
       if(!text||!text.trim()||text.trim().length>64){await clearReplies(chat,d);return wizard(chat,d,"STEP 3 — BUTTON TEXT\n\nButton text must be 1–64 characters. Try again.");}
-      d.active.text=text.trim();await clearReplies(chat,d);return askUrl(chat,d);
+      d.active.text=text.trim();d.active.style="default";await clearReplies(chat,d);return askButtonColor(chat,d);
     }
     if(d.phase==="button_url"){
       if(!text||!validUrl(text.trim())){await clearReplies(chat,d);return wizard(chat,d,`STEP 4 — BUTTON URL\n\nButton: ${d.active.text}\n\nSend a valid http(s) URL.`);}
@@ -308,11 +320,22 @@ bot.on("callback_query",async q=>{
       const i=Number(data.split(":")[1]);if(!d.buttons[i])return bot.answerCallbackQuery(q.id,{text:"Button not found.",show_alert:true});
       await bot.answerCallbackQuery(q.id);return wizard(chat,d,`EDIT BUTTON ${i+1}\n\n${d.buttons[i].text}\n${d.buttons[i].url}`,{inline_keyboard:[
         [{text:"Edit text",callback_data:`edit_text:${i}`},{text:"Edit URL",callback_data:`edit_url:${i}`}],
+        [{text:"Change color",callback_data:`edit_style:${i}`}],
         [{text:"Delete button",callback_data:`delete_button:${i}`}],[{text:"Back",callback_data:"edit_menu"}]
       ]});
     }
     if(data.startsWith("edit_text:")){const i=Number(data.split(":")[1]);if(!d.buttons[i])return bot.answerCallbackQuery(q.id,{text:"Button not found."});d.editIndex=i;d.phase="edit_button_text";await bot.answerCallbackQuery(q.id);return wizard(chat,d,"EDIT BUTTON TEXT\n\nSend the replacement text.");}
     if(data.startsWith("edit_url:")){const i=Number(data.split(":")[1]);if(!d.buttons[i])return bot.answerCallbackQuery(q.id,{text:"Button not found."});d.editIndex=i;d.phase="edit_button_url";await bot.answerCallbackQuery(q.id);return wizard(chat,d,"EDIT BUTTON URL\n\nSend the replacement URL.");}
+    if(data.startsWith("edit_style:")){const i=Number(data.split(":")[1]);if(!d.buttons[i])return bot.answerCallbackQuery(q.id,{text:"Button not found."});d.editIndex=i;await bot.answerCallbackQuery(q.id);return askButtonColor(chat,d,true);}
+    if(data.startsWith("btnstyle:")){
+      const style=data.slice("btnstyle:".length);
+      if(!["default","primary","success","danger"].includes(style))return bot.answerCallbackQuery(q.id,{text:"Invalid color."});
+      if(d.phase==="edit_button_style"&&d.buttons[d.editIndex]){
+        d.buttons[d.editIndex].style=style;d.editIndex=null;await bot.answerCallbackQuery(q.id,{text:"Button color updated."});return preview(chat,d);
+      }
+      if(d.phase!=="button_color"||!d.active)return bot.answerCallbackQuery(q.id,{text:"This step is no longer active."});
+      d.active.style=style;await bot.answerCallbackQuery(q.id);return askUrl(chat,d);
+    }
     if(data.startsWith("delete_button:")){
       const i=Number(data.split(":")[1]);if(!d.buttons[i])return bot.answerCallbackQuery(q.id,{text:"Button not found."});
       d.buttons.splice(i,1);await bot.answerCallbackQuery(q.id,{text:"Button deleted."});return preview(chat,d);
