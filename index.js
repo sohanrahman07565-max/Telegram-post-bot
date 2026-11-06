@@ -31,7 +31,7 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const drafts = new Map();
 const MAX_BUTTONS = 40, MAX_ROWS = 8, MAX_PER_ROW = 8;
 const allowed = id => ADMINS.has(String(id));
-const fresh = () => ({phase:"idle",type:"text",fileId:null,caption:"",buttons:[],active:null,editIndex:null,wizardId:null,userIds:[]});
+const fresh = () => ({phase:"idle",type:"text",fileId:null,caption:"",entities:[],buttons:[],active:null,editIndex:null,wizardId:null,userIds:[]});
 const get = id => { if (!drafts.has(String(id))) drafts.set(String(id),fresh()); return drafts.get(String(id)); };
 const reset = id => drafts.set(String(id),fresh());
 
@@ -162,13 +162,14 @@ async function publish(chat,uid,qid){
   if(d.type==="text"&&!d.caption.trim())return bot.answerCallbackQuery(qid,{text:"Post text cannot be empty.",show_alert:true});
   await bot.answerCallbackQuery(qid,{text:"Publishing..."});
   const markup=d.buttons.length?{inline_keyboard:grouped(d.buttons)}:undefined;
+  const entities=Array.isArray(d.entities)&&d.entities.length?d.entities:undefined;
   let sent;
-  if(d.type==="photo")sent=await bot.sendPhoto(activeChannel,d.fileId,{caption:d.caption||undefined,reply_markup:markup});
-  else if(d.type==="video")sent=await bot.sendVideo(activeChannel,d.fileId,{caption:d.caption||undefined,reply_markup:markup});
-  else if(d.type==="document")sent=await bot.sendDocument(activeChannel,d.fileId,{caption:d.caption||undefined,reply_markup:markup});
-  else if(d.type==="audio")sent=await bot.sendAudio(activeChannel,d.fileId,{caption:d.caption||undefined,reply_markup:markup});
-  else if(d.type==="animation")sent=await bot.sendAnimation(activeChannel,d.fileId,{caption:d.caption||undefined,reply_markup:markup});
-  else sent=await bot.sendMessage(activeChannel,d.caption,{reply_markup:markup,disable_web_page_preview:NO_PREVIEW});
+  if(d.type==="photo")sent=await bot.sendPhoto(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+  else if(d.type==="video")sent=await bot.sendVideo(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+  else if(d.type==="document")sent=await bot.sendDocument(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+  else if(d.type==="audio")sent=await bot.sendAudio(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+  else if(d.type==="animation")sent=await bot.sendAnimation(activeChannel,d.fileId,{caption:d.caption||undefined,caption_entities:entities,reply_markup:markup});
+  else sent=await bot.sendMessage(activeChannel,d.caption,{entities,reply_markup:markup,disable_web_page_preview:NO_PREVIEW});
   // After a successful publish, remove the wizard and retry deleting user inputs.
   // The /start welcome message is intentionally kept.
   await clearReplies(chat,d);
@@ -267,17 +268,17 @@ bot.on("message",async m=>{
   console.log("Incoming post input:", { userId: uid, phase: d.phase, hasText: Boolean(text), hasPhoto: Boolean(m.photo), hasVideo: Boolean(m.video) });
   try{
     if(d.phase==="media"){
-      if(m.photo){d.type="photo";d.fileId=m.photo[m.photo.length-1].file_id;d.caption=m.caption||"";await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(m.video){d.type="video";d.fileId=m.video.file_id;d.caption=m.caption||"";await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(m.document){d.type="document";d.fileId=m.document.file_id;d.fileName=m.document.file_name||"attachment";d.caption=m.caption||"";await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(m.audio){d.type="audio";d.fileId=m.audio.file_id;d.caption=m.caption||"";await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(m.animation){d.type="animation";d.fileId=m.animation.file_id;d.caption=m.caption||"";await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
-      if(text&&text.trim()){d.type="text";d.caption=text.trim();await clearReplies(chat,d);return askButtonText(chat,d);}
+      if(m.photo){d.type="photo";d.fileId=m.photo[m.photo.length-1].file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
+      if(m.video){d.type="video";d.fileId=m.video.file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
+      if(m.document){d.type="document";d.fileId=m.document.file_id;d.fileName=m.document.file_name||"attachment";d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
+      if(m.audio){d.type="audio";d.fileId=m.audio.file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
+      if(m.animation){d.type="animation";d.fileId=m.animation.file_id;d.caption=m.caption||"";d.entities=Array.isArray(m.caption_entities)?m.caption_entities:[];await clearReplies(chat,d);return d.caption?askButtonText(chat,d):askCaption(chat,d);}
+      if(text&&text.trim()){d.type="text";d.caption=text;d.entities=Array.isArray(m.entities)?m.entities:[];await clearReplies(chat,d);return askButtonText(chat,d);}
       await clearReplies(chat,d);return wizard(chat,d,"STEP 1 — MEDIA OR TEXT\n\nSend a photo, video, or text-only post.");
     }
     if(d.phase==="caption"){
       if(!text||text.length>1024){await clearReplies(chat,d);return wizard(chat,d,"STEP 2 — CAPTION\n\nSend caption text up to 1024 characters, or use /skip.");}
-      d.caption=text;await clearReplies(chat,d);return askButtonText(chat,d);
+      d.caption=text;d.entities=Array.isArray(m.entities)?m.entities:[];await clearReplies(chat,d);return askButtonText(chat,d);
     }
     if(d.phase==="button_text"){
       if(!text||!text.trim()||text.trim().length>64){await clearReplies(chat,d);return wizard(chat,d,"STEP 3 — BUTTON TEXT\n\nButton text must be 1–64 characters. Try again.");}
@@ -290,7 +291,7 @@ bot.on("message",async m=>{
     if(d.phase==="edit_caption"){
       const limit=d.type==="text"?4096:1024;
       if(!text||text.length>limit){await clearReplies(chat,d);return wizard(chat,d,`EDIT CAPTION / TEXT\n\nSend text up to ${limit} characters.`);}
-      d.caption=text;await clearReplies(chat,d);return preview(chat,d);
+      d.caption=text;d.entities=Array.isArray(m.entities)?m.entities:[];await clearReplies(chat,d);return preview(chat,d);
     }
     if(d.phase==="edit_button_text"){
       if(!text||!text.trim()||text.trim().length>64||!d.buttons[d.editIndex]){await clearReplies(chat,d);return wizard(chat,d,"EDIT BUTTON TEXT\n\nSend text between 1 and 64 characters.");}
@@ -309,10 +310,10 @@ bot.on("callback_query",async q=>{
   const d=get(uid);
   try{
     if(data==="new_post"){await bot.answerCallbackQuery(q.id);reset(uid);return askMedia(chat,get(uid));}
-    if(data==="skip_media"){if(d.phase!=="media")return bot.answerCallbackQuery(q.id,{text:"This step is no longer active."});await bot.answerCallbackQuery(q.id);d.type="text";d.fileId=null;d.caption="";return askCaption(chat,d);}
-    if(data==="skip_caption"){if(d.phase!=="caption")return bot.answerCallbackQuery(q.id,{text:"This step is no longer active."});await bot.answerCallbackQuery(q.id);await clearReplies(chat,d);d.caption="";return askButtonText(chat,d);}
+    if(data==="skip_media"){if(d.phase!=="media")return bot.answerCallbackQuery(q.id,{text:"This step is no longer active."});await bot.answerCallbackQuery(q.id);d.type="text";d.fileId=null;d.caption="";d.entities=[];return askCaption(chat,d);}
+    if(data==="skip_caption"){if(d.phase!=="caption")return bot.answerCallbackQuery(q.id,{text:"This step is no longer active."});await bot.answerCallbackQuery(q.id);await clearReplies(chat,d);d.caption="";d.entities=[];return askButtonText(chat,d);}
     if(data==="edit_menu"){await bot.answerCallbackQuery(q.id);return wizard(chat,d,`EDIT MENU\n\nChoose what to edit or delete.\n\nButtons:\n${listButtons(d)}`,editKeys(d));}
-    if(data==="edit_media"){await bot.answerCallbackQuery(q.id);d.buttons=[];d.caption="";d.fileId=null;d.type="text";return askMedia(chat,d,true);}
+    if(data==="edit_media"){await bot.answerCallbackQuery(q.id);d.buttons=[];d.caption="";d.entities=[];d.fileId=null;d.type="text";return askMedia(chat,d,true);}
     if(data==="edit_caption"){await bot.answerCallbackQuery(q.id);d.phase="edit_caption";return wizard(chat,d,`EDIT CAPTION / TEXT\n\nCurrent:\n${d.caption||"(Empty)"}\n\nSend replacement text.`);}
     if(data==="add_button"){await bot.answerCallbackQuery(q.id);return askButtonText(chat,d);}
     if(data==="preview"){await bot.answerCallbackQuery(q.id);return preview(chat,d);}
